@@ -4581,6 +4581,13 @@ class DecodeTreeTests(unittest.TestCase, Util):
 
 class PrefixCodeTests(unittest.TestCase, Util):
 
+    
+    def test_encode_ixyz_string(self):
+        a = bitarray()
+        a.encode_ixyz('XZIY')
+        self.assertEqual(a, bitarray('10010011'))
+
+
     def test_encode_string(self):
         a = bitarray()
         a.encode(alphabet_code, '')

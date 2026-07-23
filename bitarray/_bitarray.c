@@ -3569,12 +3569,92 @@ bitarray_encode(bitarrayobject *self, PyObject *args)
     return NULL;
 }
 
+
 PyDoc_STRVAR(encode_doc,
 "encode(code, iterable, /)\n\
 \n\
 Given a prefix code (a dict mapping symbols to bitarrays),\n\
 iterate over the iterable object with symbols, and extend bitarray\n\
 with corresponding bitarray for each symbol.");
+
+static PyObject *
+bitarray_encode_ixyz(bitarrayobject *self, PyObject *args)
+{
+    PyObject *str_obj;
+    // 1. Парсим аргумент: ожидаем ровно одну строку Python
+    if (!PyArg_ParseTuple(args, "U", &str_obj)) {
+        return NULL;
+    }
+
+    // Получаем доступ к внутренним данным строки Python (UTF-8 / Kind-независимо)
+    Py_ssize_t len = PyUnicode_GET_LENGTH(str_obj);
+    if (len == 0) {
+        Py_RETURN_NONE;
+    }
+
+    // 2. Рассчитываем, сколько байт нам понадобится для хранения бит
+    // Формула: (количество_символов * 2 бита + 7) / 8
+    Py_ssize_t nbytes = (len * 2 + 7) / 8;
+
+    // Выделяем память под буфер байт (используем стандартный аллокатор Python для Си)
+    char *buffer = (char *)PyMem_Malloc(nbytes);
+    if (buffer == NULL) {
+        return PyErr_NoMemory();
+    }
+    memset(buffer, 0, nbytes); // Очищаем буфер
+
+    // 3. Основной цикл кодирования (Упаковка 4 символов в 1 байт)
+    Py_ssize_t byte_idx = 0;
+    int bit_shift = 6; // Начинаем со старших битов (Big-Endian: 6, 4, 2, 0)
+
+    for (Py_ssize_t i = 0; i < len; i++) {
+        Py_UCS4 ch = PyUnicode_READ_CHAR(str_obj, i);
+        char val = 0;
+
+        // Быстрое определение 2-битного значения через switch
+        switch (ch) {
+            case 'I': val = 0; break; // 00
+            case 'Z': val = 1; break; // 01
+            case 'X': val = 2; break; // 10
+            case 'Y': val = 3; break; // 11
+            default:
+                PyMem_Free(buffer);
+                PyErr_SetString(PyExc_ValueError, "Строка содержит недопустимые символы. Разрешены только I, X, Y, Z.");
+                return NULL;
+        }
+
+        // Записываем 2 бита в текущий байт с нужным сдвигом
+        buffer[byte_idx] |= (val << bit_shift);
+
+        bit_shift -= 2;
+        if (bit_shift < 0) {
+            bit_shift = 6; // Переходим к следующему байту
+            byte_idx++;
+        }
+    }
+
+    // 4. Записываем полученные байты во внутреннюю структуру bitarray
+    // В оригинальном bitarray для этого используются внутренние макросы/функции.
+    // Обычно это resize объекта и копирование буфера:
+    if (resize(self, len * 2) < 0) {
+        PyMem_Free(buffer);
+        return NULL;
+    }
+
+    // Копируем данные в память bitarray (self->ob_buf — стандартное имя буфера в bitarray)
+    // memcpy(self->ob_buf, buffer, nbytes);
+    memcpy(self->ob_item, buffer, nbytes);
+    PyMem_Free(buffer);
+
+    Py_RETURN_NONE;
+}
+
+PyDoc_STRVAR(encode_ixyz_doc,
+"encode(str)\n\
+\n\
+Optimized 2-bit-per-symbol encoding of IXYZ strings.");
+
+
 
 /* ----------------------- binary tree (C-level) ----------------------- */
 
@@ -4343,6 +4423,10 @@ static PyMethodDef bitarray_methods[] = {
      decode_doc},
     {"encode",       (PyCFunction) bitarray_encode,      METH_VARARGS,
      encode_doc},
+    
+    {"encode_ixyz", (PyCFunction)bitarray_encode_ixyz, METH_VARARGS,
+     encode_ixyz_doc},
+
     {"extend",       (PyCFunction) bitarray_extend,      METH_O,
      extend_doc},
     {"fill",         (PyCFunction) bitarray_fill,        METH_NOARGS,

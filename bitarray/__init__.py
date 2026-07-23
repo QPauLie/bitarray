@@ -51,7 +51,7 @@ and may therefore be used as a dictionary key.
         ""  # no docstring
         raise TypeError("frozenbitarray is immutable")
 
-    append = bytereverse = clear = extend = encode = fill = __delitem__
+    append = bytereverse = clear = extend = encode = fill = encode_ixyz = __delitem__
     frombytes = fromfile = insert = invert = pack = pop = __delitem__
     remove = rotate = reverse = setall = sort = __setitem__ = __delitem__
     __iadd__ = __iand__ = __imul__ = __ior__ = __ixor__ = __delitem__

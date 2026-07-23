@@ -1,0 +1,61 @@
+from bitarray import bitarray
+from random import choice
+from time import perf_counter
+
+
+def get_random(n_qubits: int) -> str:
+    """ 
+    Get random Pauli String for n_qubits
+    Args:
+         n_qubits (int): Number of qubits
+    Returns:
+         str
+         Random Pauli string
+
+    """
+    return''.join([choice("IXYZ") for _ in range(n_qubits)])
+
+def get_random_list(n_qubits:int, length: int) -> list[str]:
+    """ 
+    Get random list of Pauli strings of length `length` for `n_qubits`
+    Args:
+         n_qubits (int): Number of qubits
+         length (int): List size
+    Returns:
+         list[str]
+         A list of random Pauli string
+
+    """
+    return [get_random(n_qubits) for _ in range(length)]
+
+
+CODEC = {
+    "I": bitarray([0, 0]),
+    "X": bitarray([1, 0]),
+    "Y": bitarray([1, 1]),
+    "Z": bitarray([0, 1]),
+}
+
+def create(paulistring):
+    ba = bitarray()
+    ba.encode(CODEC, paulistring)
+    return ba
+
+def create_ixyz(paulistring):
+    ba = bitarray()
+    ba.encode_ixyz(paulistring)
+    return ba
+
+paulistrings = get_random_list(10000, 1000)
+
+
+start_time = perf_counter()
+[create(paulistring) for paulistring in paulistrings]
+end_time = perf_counter()
+print(f"encode: {end_time - start_time}")
+start_time = perf_counter()
+[create_ixyz(paulistring) for paulistring in paulistrings]
+end_time = perf_counter()
+print(f"encode_ixyz: {end_time - start_time}")
+
+
