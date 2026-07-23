@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bitarray"
-version = "3.0.0"  
+version = "0.0.1"  
 description = "Fork of bitarray with custom C-implemented IXYZ codec and commutes_with"
 readme = "README.md"
 requires-python = ">=3.9"
