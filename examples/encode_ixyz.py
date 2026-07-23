@@ -1,6 +1,7 @@
 from bitarray import bitarray
 from random import choice
 from time import perf_counter
+from itertools import combinations
 
 
 def get_random(n_qubits: int) -> str:
@@ -53,9 +54,17 @@ start_time = perf_counter()
 [create(paulistring) for paulistring in paulistrings]
 end_time = perf_counter()
 print(f"encode: {end_time - start_time}")
+
 start_time = perf_counter()
-[create_ixyz(paulistring) for paulistring in paulistrings]
+g = [create_ixyz(paulistring) for paulistring in paulistrings]
 end_time = perf_counter()
 print(f"encode_ixyz: {end_time - start_time}")
+
+start_time = perf_counter()
+for s1, s2 in combinations(g, r=2):
+    r = s1.commutes_with(s2)
+end_time = perf_counter()
+print(f"commutes_with: {end_time - start_time}")
+
 
 

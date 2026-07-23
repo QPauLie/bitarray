@@ -13,6 +13,7 @@
 #include "pythoncapi_compat.h"
 #include "structmember.h"
 #include "bitarray.h"
+#include <string.h>  // Для memcpy
 
 /* size used when reading / writing blocks from files (in bytes) */
 #define BLOCKSIZE  65536
@@ -3577,72 +3578,77 @@ Given a prefix code (a dict mapping symbols to bitarrays),\n\
 iterate over the iterable object with symbols, and extend bitarray\n\
 with corresponding bitarray for each symbol.");
 
+
 static PyObject *
 bitarray_encode_ixyz(bitarrayobject *self, PyObject *args)
 {
     PyObject *str_obj;
-    // 1. Парсим аргумент: ожидаем ровно одну строку Python
     if (!PyArg_ParseTuple(args, "U", &str_obj)) {
         return NULL;
     }
+    if (self->readonly) {
+        PyErr_SetString(PyExc_BufferError, "cannot resize read-only bitarray");
+        return NULL;
+    }
 
-    // Получаем доступ к внутренним данным строки Python (UTF-8 / Kind-независимо)
     Py_ssize_t len = PyUnicode_GET_LENGTH(str_obj);
     if (len == 0) {
         Py_RETURN_NONE;
     }
 
-    // 2. Рассчитываем, сколько байт нам понадобится для хранения бит
-    // Формула: (количество_символов * 2 бита + 7) / 8
-    Py_ssize_t nbytes = (len * 2 + 7) / 8;
+    Py_ssize_t nbits = len * 2;
+    Py_ssize_t nbytes = (nbits + 7) / 8;
 
-    // Выделяем память под буфер байт (используем стандартный аллокатор Python для Си)
     char *buffer = (char *)PyMem_Malloc(nbytes);
     if (buffer == NULL) {
         return PyErr_NoMemory();
     }
-    memset(buffer, 0, nbytes); // Очищаем буфер
+    memset(buffer, 0, nbytes);
 
-    // 3. Основной цикл кодирования (Упаковка 4 символов в 1 байт)
     Py_ssize_t byte_idx = 0;
-    int bit_shift = 6; // Начинаем со старших битов (Big-Endian: 6, 4, 2, 0)
+    Py_ssize_t i = 0;
 
-    for (Py_ssize_t i = 0; i < len; i++) {
+    // --- Fast processing in 4-character blocks (1 full byte) ---
+    Py_ssize_t fast_len = len - (len % 4); 
+    for (; i < fast_len; i += 4) {
+        char b0 = 0, b1 = 0, b2 = 0, b3 = 0;
+        
+        Py_UCS4 c0 = PyUnicode_READ_CHAR(str_obj, i);
+        Py_UCS4 c1 = PyUnicode_READ_CHAR(str_obj, i + 1);
+        Py_UCS4 c2 = PyUnicode_READ_CHAR(str_obj, i + 2);
+        Py_UCS4 c3 = PyUnicode_READ_CHAR(str_obj, i + 3);
+
+        // Mapping: I=0, Z=1, X=2, Y=3
+        b0 = (c0 == 'Z') ? 1 : (c0 == 'X') ? 2 : (c0 == 'Y') ? 3 : 0;
+        b1 = (c1 == 'Z') ? 1 : (c1 == 'X') ? 2 : (c1 == 'Y') ? 3 : 0;
+        b2 = (c2 == 'Z') ? 1 : (c2 == 'X') ? 2 : (c2 == 'Y') ? 3 : 0;
+        b3 = (c3 == 'Z') ? 1 : (c3 == 'X') ? 2 : (c3 == 'Y') ? 3 : 0;
+
+        // 
+        buffer[byte_idx++] = (b0 << 6) | (b1 << 4) | (b2 << 2) | b3;
+    }
+
+    // --- Processing the remainder of the string (if the length is not a multiple of 4) --- ---
+    int bit_shift = 6;
+    for (; i < len; i++) {
         Py_UCS4 ch = PyUnicode_READ_CHAR(str_obj, i);
-        char val = 0;
+        
+        // Mapping: I=0, Z=1, X=2, Y=3
+        char val = (ch == 'Z') ? 1 : (ch == 'X') ? 2 : (ch == 'Y') ? 3 : 0;
 
-        // Быстрое определение 2-битного значения через switch
-        switch (ch) {
-            case 'I': val = 0; break; // 00
-            case 'Z': val = 1; break; // 01
-            case 'X': val = 2; break; // 10
-            case 'Y': val = 3; break; // 11
-            default:
-                PyMem_Free(buffer);
-                PyErr_SetString(PyExc_ValueError, "Строка содержит недопустимые символы. Разрешены только I, X, Y, Z.");
-                return NULL;
-        }
-
-        // Записываем 2 бита в текущий байт с нужным сдвигом
         buffer[byte_idx] |= (val << bit_shift);
-
         bit_shift -= 2;
         if (bit_shift < 0) {
-            bit_shift = 6; // Переходим к следующему байту
+            bit_shift = 6;
             byte_idx++;
         }
     }
 
-    // 4. Записываем полученные байты во внутреннюю структуру bitarray
-    // В оригинальном bitarray для этого используются внутренние макросы/функции.
-    // Обычно это resize объекта и копирование буфера:
-    if (resize(self, len * 2) < 0) {
+    if (resize(self, nbits) < 0) {
         PyMem_Free(buffer);
         return NULL;
     }
 
-    // Копируем данные в память bitarray (self->ob_buf — стандартное имя буфера в bitarray)
-    // memcpy(self->ob_buf, buffer, nbytes);
     memcpy(self->ob_item, buffer, nbytes);
     PyMem_Free(buffer);
 
@@ -3654,6 +3660,98 @@ PyDoc_STRVAR(encode_ixyz_doc,
 \n\
 Optimized 2-bit-per-symbol encoding of IXYZ strings.");
 
+
+
+/* Кроссплатформенный popcount для 64-битных чисел */
+#if defined(_MSC_VER)
+    #include <intrin.h>
+    #define POPCOUNT64(x) __popcnt64(x)
+#elif defined(__GNUC__) || defined(__clang__)
+    #define POPCOUNT64(x) __builtin_popcountll(x)
+#else
+    /* Запасной софтверный вариант, если компилятор экзотический */
+    static inline int POPCOUNT64(unsigned long long v) {
+        v = v - ((v >> 1) & 0x5555555555555555ULL);
+        v = (v & 0x3333333333333333ULL) + ((v >> 2) & 0x3333333333333333ULL);
+        return (int)((((v + (v >> 4)) & 0xF0F0F0F0F0F0F0FULL) * 0x101010101010101ULL) >> 56);
+    }
+#endif
+
+static PyObject *
+bitarray_commutes_with(bitarrayobject *self, PyObject *args)
+{
+    PyObject *other_obj;
+    /* Проверяем тип аргумента (Bitarray_Type — стандартное имя в bitarray) */
+    if (!PyArg_ParseTuple(args, "O!", &Bitarray_Type, &other_obj)) {
+        return NULL;
+    }
+    bitarrayobject *other = (bitarrayobject *)other_obj;
+
+    Py_ssize_t self_bits = self->nbits;
+    Py_ssize_t other_bits = other->nbits;
+    Py_ssize_t min_bits = (self_bits < other_bits) ? self_bits : other_bits;
+    Py_ssize_t nbytes = (min_bits + 7) / 8;
+
+    if (nbytes == 0) {
+        Py_RETURN_TRUE;
+    }
+
+    unsigned long long total_ones_1 = 0;
+    unsigned long long total_ones_2 = 0;
+
+    Py_ssize_t i = 0;
+    /* Обработка блоками по 8 байт (64 бита) */
+    Py_ssize_t fast_bytes = nbytes - (nbytes % 8);
+
+    for (; i < fast_bytes; i += 8) {
+        unsigned long long s_word;
+        unsigned long long o_word;
+
+        /* Безопасное копирование памяти (работает без Bus Error на ARM/Linux/macOS) */
+        memcpy(&s_word, self->ob_item + i, 8);
+        memcpy(&o_word, other->ob_item + i, 8);
+
+        unsigned long long even_mask = 0x5555555555555555ULL;
+
+        /* 1. count_and(self.even, other.odd) */
+        unsigned long long and_1 = (s_word & even_mask) & (o_word >> 1);
+        total_ones_1 += POPCOUNT64(and_1);
+
+        /* 2. count_and(other.even, self.odd) */
+        unsigned long long and_2 = (o_word & even_mask) & (s_word >> 1);
+        total_ones_2 += POPCOUNT64(and_2);
+    }
+
+    /* Обработка оставшихся байт (< 8 байт) */
+    for (; i < nbytes; i++) {
+        unsigned char s_byte = (unsigned char)self->ob_item[i];
+        unsigned char o_byte = (unsigned char)other->ob_item[i];
+
+        /* Если это последний байт и он неполный, отсекаем лишнее */
+        if (i == nbytes - 1 && (min_bits % 8) != 0) {
+            int extra_bits = 8 - (min_bits % 8);
+            /* Маска для Big-Endian (оригинальный bitarray использует его по умолчанию) */
+            unsigned char tail_mask = 0xFF << extra_bits; 
+            s_byte &= tail_mask;
+            o_byte &= tail_mask;
+        }
+
+        total_ones_1 += POPCOUNT64((s_byte & 0x55) & (o_byte >> 1));
+        total_ones_2 += POPCOUNT64((o_byte & 0x55) & (s_byte >> 1));
+    }
+
+    /* Проверка равенства четностей */
+    if ((total_ones_1 % 2) == (total_ones_2 % 2)) {
+        Py_RETURN_TRUE;
+    } else {
+        Py_RETURN_FALSE;
+    }
+}
+
+PyDoc_STRVAR(commutes_with_doc,
+"commutes_with(bitarray)\n\
+\n\
+Checking two strings for commutativity");
 
 
 /* ----------------------- binary tree (C-level) ----------------------- */
@@ -4426,6 +4524,9 @@ static PyMethodDef bitarray_methods[] = {
     
     {"encode_ixyz", (PyCFunction)bitarray_encode_ixyz, METH_VARARGS,
      encode_ixyz_doc},
+
+    {"commutes_with", (PyCFunction)bitarray_commutes_with, METH_VARARGS,
+     commutes_with_doc},
 
     {"extend",       (PyCFunction) bitarray_extend,      METH_O,
      extend_doc},
