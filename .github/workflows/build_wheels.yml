@@ -1,13 +1,12 @@
-name: Build Wheels
+name: Build and Release Wheels
 
 on:
-  push:
-    branches: [ main, master ]
   release:
-    types: [ published ]
+    types: [published]
 
+# Нативные права для безопасной загрузки в Assets
 permissions:
-  contents: write 
+  contents: write
 
 jobs:
   build_wheels:
@@ -20,14 +19,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up QEMU (нужно для сборки под ARM Linux)
+      - name: Set up QEMU (для сборки под ARM Linux)
         if: matrix.os == 'ubuntu-latest'
         uses: docker/setup-qemu-action@v3
 
-      - name: Build wheels
+      - name: Build wheels via cibuildwheel
         uses: pypa/cibuildwheel@v2.22.0
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload Wheels to Release Assets
+        uses: softprops/action-gh-release@v2
         with:
-          name: cibw-wheels-${{ matrix.os }}-${{ strategy.job-index }}
-          path: ./wheelhouse/*.whl
+          files: "**/*.whl"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
